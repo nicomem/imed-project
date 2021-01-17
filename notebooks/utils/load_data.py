@@ -1,42 +1,52 @@
 import nibabel as nib
 import numpy as np
-from scipy.sparse import bsr_matrix
+from tensorflow.keras.utils import Sequence
 
 from pathlib import Path
 
-def _to_sparse_multiple(nib_images: np.ndarray, dtype, verbose = False) -> np.ndarray:
-    """
-    Load nibabel images and store them in sparse matrices.
-    Each nibabel image contains multiple slices,
-        all of an image's slices are stored in a new array.
+class NibDataSequence(Sequence):
+    '''
+    Helper class for dataset lazy loading.
+    Each index access correspond to a load of a scan (multiple slices).
+    '''
 
-    Parameters:
-    -----------
-    nib_images: np.ndarray[nib_image]
-        A list of nibabel images
+    def __init__(self, dataset_nib):
+        self.dataset_nib = dataset_nib
+        self.len = len(dataset_nib['T1'])
 
-    Returns:
-    --------
-    sparse_matrices: np.ndarray[np.ndarray[scipy.bsr_matrix]]
-        A list of sparse matrices
-    """
+    def __len__(self):
+        return self.len
 
-    # Create an array containing all nib_images ndarrays
-    res = np.empty(nib_images.shape[0], dtype=np.ndarray)
-    for i, nib_obj in enumerate(nib_images):
-        if verbose:
-            print(f'{i:>3} / {res.shape[0]}')
+    def __getitem__(self, idx):
+        # Do not use '3DT1' since its slices shapes are weird
+        columns = ['T1', 'FLAIR', 'wmh']
 
-        nib_data = np.asarray(nib_obj.dataobj)
+        # Load all slices for the wanted element
+        batch_dic = {
+            k: np.asarray(self.dataset_nib[k][idx].dataobj)
+            for k in columns
+        }
 
-        # Create an array containing all nib slices
-        res[i] = np.empty(nib_data.shape[0], dtype=np.object)
+        # Regroup all inputs together
+        inputs = np.stack([
+            batch_dic['T1'],
+            batch_dic['FLAIR']
+        ], axis=-1)
 
-        # Convert and store each slice
-        for j in range(nib_data.shape[-1]):
-            res[i][j] = bsr_matrix(nib_data[...,j], dtype=dtype)
+        outputs = batch_dic['wmh']
 
-    return res
+        return inputs, outputs
+
+    def load_all(self) -> (np.ndarray, np.ndarray):
+        X = np.empty(shape=len(self), dtype=np.ndarray)
+        Y = np.empty(shape=len(self), dtype=np.ndarray)
+
+        for i, (x,y) in enumerate(self):
+            X[i] = x
+            Y[i] = y
+
+        return (X, Y)
+
 
 def get_dataset(data_dir: str, train_ratio = 0.9, verbose = False):
     """
@@ -107,24 +117,3 @@ def get_dataset(data_dir: str, train_ratio = 0.9, verbose = False):
     }
 
     return (train_nib, val_nib)
-
-def load_dataset_nib(dataset_nib, verbose = False):
-    """
-    Load a collection of nib objects to sparse matrices.
-    """
-
-    dtypes = {
-        '3DT1': np.float32,
-        'FLAIR': np.float32,
-        'T1': np.float32,
-        'wmh': np.bool
-    }
-
-    # Load the data and convert to sparse matrices
-    return {
-        k: _to_sparse_multiple(v, dtypes[k], verbose)
-        for k,v in dataset_nib.items()
-    }
-
-if __name__ == '__main__':
-    load_dataset('../data', verbose=True)
