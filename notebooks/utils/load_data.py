@@ -23,7 +23,13 @@ class NibDataSequence(Sequence):
 
         # Load all slices for the wanted element
         batch_dic = {
-            k: np.asarray(self.dataset_nib[k][idx].dataobj)
+            # Change from (Y,X,S) to (S,Y,X) for easier usage
+            k: np.moveaxis(
+                # Load the slices
+                np.asarray(self.dataset_nib[k][idx].dataobj),
+                -1,
+                0
+            )
             for k in columns
         }
 
@@ -33,7 +39,8 @@ class NibDataSequence(Sequence):
             batch_dic['FLAIR']
         ], axis=-1)
 
-        outputs = batch_dic['wmh']
+        # Add the channels axis (single channel)
+        outputs = batch_dic['wmh'][...,None]
 
         return inputs, outputs
 
@@ -46,6 +53,17 @@ class NibDataSequence(Sequence):
             Y[i] = y
 
         return (X, Y)
+
+
+class CachedDataSequence(Sequence):
+    def __init__(self, nib_seq: NibDataSequence):
+        self.X, self.Y = nib_seq.load_all()
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.Y[idx]
 
 
 def get_dataset(data_dir: str, train_ratio = 0.9, verbose = False):
