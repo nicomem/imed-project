@@ -140,8 +140,11 @@ class SlicesSequence(Sequence):
         return X, Y
 
 class CachedSlicesSequence(Sequence):
-    def __init__(self, slices_seq: SlicesSequence, batch_size: int, shuffle = True):
+    def __init__(self, slices_seq: SlicesSequence, batch_size: int, shuffle = True, preprocess = False):
         self.X, self.Y = slices_seq.load_all()
+        if preprocess:
+            self.X = preprocess_slices(self.X)
+
         self.indexes = np.arange(0, self.Y.shape[0])
         self.batch_size = batch_size
         self.shuffle = shuffle
@@ -171,6 +174,29 @@ class CachedSlicesSequence(Sequence):
         if self.shuffle:
             np.random.shuffle(self.indexes)
 
+import cv2
+from skimage import morphology
+from skimage.morphology import square, disk
+
+def preprocess_slices(slices, disk_kernel = 1, channel = 1):
+    """
+    Preprocess the dataset by adding a tophat layer
+
+    Parameters:
+    -----------
+    slices: X
+    channel: FLAIR channel
+    """
+    tophat_kernel = disk(disk_kernel)
+    new_shape = (slices.shape[0], slices.shape[1], slices.shape[2], slices.shape[3] + 1)
+    preprocessed = np.zeros(new_shape)
+    preprocessed[:,:,:,:2] = slices
+
+    for i, im in enumerate(slices):
+        tophat_img = morphology.white_tophat(im[:,:,channel], selem=tophat_kernel)
+
+        preprocessed[i,:,:,slices.shape[3]] = tophat_img 
+    return preprocessed
 
 def get_dataset(data_dir: str, train_ratio = 0.9, verbose = False) -> (dict, dict):
     """
