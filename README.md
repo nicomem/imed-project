@@ -22,5 +22,5 @@ Projet Imagerie Médicale
 
 Remove the outputs from the notebooks (smaller files, avoid git conflicts)
 ```bash
-./clean-notebooks.sh notebooks/*
+./clean-notebooks.sh
 ```
