@@ -69,7 +69,7 @@ class SlicesSequence(Sequence):
                     sl
                     for slices in batch_dic[k]
                     for sl in slices
-                ])
+                ], dtype=np.ndarray)
                 for k in dtypes.keys()
             }
         else:
@@ -198,17 +198,20 @@ def preprocess_slices(slices, disk_kernel = 1, channel = 1):
         preprocessed[i,:,:,slices.shape[3]] = tophat_img 
     return preprocessed
 
-def get_dataset(data_dir: str, train_ratio = 0.9, verbose = False) -> (dict, dict):
+def get_dataset(data_dir: str, val_ratio = 0.1, test_ratio = 0.1, verbose = False) -> (dict, dict, dict):
     """
-    Load the dataset and split it into train/validation sets.
+    Load the dataset and split it into train/val/test sets.
 
     Parameters:
     -----------
     data_dir:
         The path to the data directory.
 
-    train_ratio:
-        The proportion of train data (compared to validation).
+    val_ratio:
+        The proportion of validation data.
+
+    test_ratio:
+        The proportion of test data.
 
     verbose:
         Whether debug information should be printed.
@@ -220,6 +223,9 @@ def get_dataset(data_dir: str, train_ratio = 0.9, verbose = False) -> (dict, dic
 
     val_nib: np.array(nib_image)
         An array of validation data files loaded with `nibabel.load`.
+
+    test_nib: np.array(nib_image)
+        An array of test data files loaded with `nibabel.load`.
     """
 
     data_dir = Path(data_dir)
@@ -245,16 +251,20 @@ def get_dataset(data_dir: str, train_ratio = 0.9, verbose = False) -> (dict, dic
         for k,v in input_files.items()
     }
 
-    # Split into train/val
+    # Split into train/val/test
     shuffle = np.arange(nb_files)
     np.random.shuffle(shuffle)
 
-    nb_train = int(train_ratio * nb_files)
+    nb_val = int(np.ceil(val_ratio * nb_files))
+    nb_test = int(np.ceil(test_ratio * nb_files))
+    nb_train = nb_files - nb_val - nb_test
+
     train_index = shuffle[:nb_train]
-    val_index = shuffle[nb_train:]
+    val_index = shuffle[nb_train:nb_train+nb_val]
+    test_index = shuffle[nb_train+nb_val:]
 
     if verbose:
-        print('Train/val split:', nb_train, '/', nb_files - nb_train)
+        print('Train/val/test split:', nb_train, '/', nb_val, '/', nb_test)
 
     train_nib = {
         k: v[train_index]
@@ -266,24 +276,23 @@ def get_dataset(data_dir: str, train_ratio = 0.9, verbose = False) -> (dict, dic
         for k,v in inputs_nib.items()
     }
 
-    return (train_nib, val_nib)
+    test_nib = {
+        k: v[test_index]
+        for k,v in inputs_nib.items()
+    }
 
-from timeit import timeit
+    return (train_nib, val_nib, test_nib)
+
 if __name__ == '__main__':
-    train, val = get_dataset('../../data')
+    train, val, test = get_dataset('../../data', verbose=True)
 
-    slices = SlicesSequence(train, 200, 200, 3, shuffle=True)
-    slices_cache = CachedSlicesSequence(slices, 3)
-    print(slices_cache.X.shape, slices_cache.X.dtype, slices_cache.X.nbytes / 1_000_000, 'MB')
-    print(slices_cache.Y.shape, slices_cache.Y.dtype, slices_cache.Y.nbytes / 1_000_000, 'MB')
-    x,y = slices_cache[0]
+    # slices = SlicesSequence(train, 200, 200, 3, shuffle=True)
+    # slices_cache = CachedSlicesSequence(slices, 3)
+    # print(slices_cache.X.shape, slices_cache.X.dtype, slices_cache.X.nbytes / 1_000_000, 'MB')
+    # print(slices_cache.Y.shape, slices_cache.Y.dtype, slices_cache.Y.nbytes / 1_000_000, 'MB')
+    # x,y = slices_cache[0]
     # print(x.shape)
     # print(x[0].shape)
     # print(y.shape)
     # print(y[0].shape)
 
-    # i = 0
-    # while True:
-    #     x,y = slices[i % len(slices)]
-    #     print(i, x.shape, y.shape)
-    #     i += 1
