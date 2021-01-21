@@ -1,6 +1,10 @@
+import cv2
 import nibabel as nib
 import numpy as np
 import tensorflow as tf
+
+from skimage import morphology
+from skimage.morphology import square, disk
 from tensorflow.keras.utils import Sequence
 
 from pathlib import Path
@@ -51,25 +55,25 @@ class SlicesSequence(Sequence):
         cols_without_target = ['T1', 'FLAIR']
 
         if fetch_all:
-            # Load all slices
+            # Load all slices for each scan
             batch_dic = {
-                k: np.asarray([
+                k: [
                     np.moveaxis(np.asarray(
                         self.dataset_nib[k][i_scan].dataobj,
                         dtype=dtype
                     ), -1, 0)
                     for i_scan in range(self.dataset_nib[k].shape[0])
-                ], dtype=np.ndarray)
+                ]
                 for k,dtype in dtypes.items()
             }
 
             # Flatten the arrays
             batch_dic = {
-                k: np.asarray([
+                k: [
                     sl
                     for slices in batch_dic[k]
                     for sl in slices
-                ], dtype=np.ndarray)
+                ]
                 for k in dtypes.keys()
             }
         else:
@@ -87,20 +91,23 @@ class SlicesSequence(Sequence):
 
             # Load all slices for the wanted element
             batch_dic = {
-                k: np.asarray([
+                k: [
                     # Load the wanted slice from index=[i_scan, i_slice]
                     np.asarray(
                         self.dataset_nib[k][index[0]].dataobj[...,index[1]],
                         dtype=np.float32
                     )
                     for index in indexes
-                ], dtype=np.ndarray)
+                ]
                 for k in dtypes.keys()
             }
 
         # Reshape the slices
         for k,v in batch_dic.items():
             for i, img in enumerate(v):
+                # Crop or pad the slices to have the same shape
+                # The tf function requires the slice to have channels
+                # so we add an axis that we remove just after
                 batch_dic[k][i] = tf.image.resize_with_crop_or_pad(
                     img[...,None].astype(dtypes[k]),
                     self.target_height,
@@ -174,9 +181,6 @@ class CachedSlicesSequence(Sequence):
         if self.shuffle:
             np.random.shuffle(self.indexes)
 
-import cv2
-from skimage import morphology
-from skimage.morphology import square, disk
 
 def preprocess_slices(slices, disk_kernel = 1, channel = 1):
     """
@@ -195,7 +199,7 @@ def preprocess_slices(slices, disk_kernel = 1, channel = 1):
     for i, im in enumerate(slices):
         tophat_img = morphology.white_tophat(im[:,:,channel], selem=tophat_kernel)
 
-        preprocessed[i,:,:,slices.shape[3]] = tophat_img 
+        preprocessed[i,:,:,slices.shape[3]] = tophat_img
     return preprocessed
 
 def get_dataset(data_dir: str, val_ratio = 0.1, test_ratio = 0.1, verbose = False) -> (dict, dict, dict):
@@ -285,14 +289,3 @@ def get_dataset(data_dir: str, val_ratio = 0.1, test_ratio = 0.1, verbose = Fals
 
 if __name__ == '__main__':
     train, val, test = get_dataset('../../data', verbose=True)
-
-    # slices = SlicesSequence(train, 200, 200, 3, shuffle=True)
-    # slices_cache = CachedSlicesSequence(slices, 3)
-    # print(slices_cache.X.shape, slices_cache.X.dtype, slices_cache.X.nbytes / 1_000_000, 'MB')
-    # print(slices_cache.Y.shape, slices_cache.Y.dtype, slices_cache.Y.nbytes / 1_000_000, 'MB')
-    # x,y = slices_cache[0]
-    # print(x.shape)
-    # print(x[0].shape)
-    # print(y.shape)
-    # print(y[0].shape)
-
