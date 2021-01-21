@@ -9,6 +9,28 @@ from tensorflow.keras.utils import Sequence
 
 from pathlib import Path
 
+def ndarray_replace(arr: np.ndarray, orig: int, new: int) -> np.ndarray:
+    """
+    Replace every element with a specified value by another.
+
+    Parameters:
+    -----------
+    arr:
+        The array to modify (in-place).
+    orig:
+        The value to replace.
+    new:
+        The value to insert in place of the other.
+
+    Returns:
+    --------
+    arr:
+        The array that have been modified in-place.
+    """
+    arr[arr == orig] = new
+    return arr
+
+
 class SlicesSequence(Sequence):
     '''
     Helper class for slices lazy loading.
@@ -54,15 +76,29 @@ class SlicesSequence(Sequence):
         }
         cols_without_target = ['T1', 'FLAIR']
 
+        preprocess_slices = {
+            'T1': lambda x:x,
+            'FLAIR': lambda x:x,
+            # Set target class 2 to 0
+            'wmh': lambda x: ndarray_replace(x, 2, 0)
+        }
+
         if fetch_all:
             # Load all slices for each scan
             batch_dic = {
                 k: [
-                    np.moveaxis(np.asarray(
-                        self.dataset_nib[k][i_scan].dataobj,
-                        dtype=dtype
-                    ), -1, 0)
-                    for i_scan in range(self.dataset_nib[k].shape[0])
+                    # Apply preprocessing
+                    preprocess_slices[k](
+                        # Move slices axis to start: (H,W,S) -> (S,H,W)
+                        np.moveaxis(
+                            # Load the scan data
+                            np.asarray(scan.dataobj),
+                            -1,
+                            0
+                        )
+                    # Set wanted dtype after preprocessing
+                    ).astype(dtype)
+                    for scan in self.dataset_nib[k]
                 ]
                 for k,dtype in dtypes.items()
             }
