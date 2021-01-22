@@ -27,8 +27,9 @@ def ndarray_replace(arr: np.ndarray, orig: int, new: int) -> np.ndarray:
     arr:
         The array that have been modified in-place.
     """
-    arr[arr == orig] = new
-    return arr
+    new_arr = arr.copy()
+    new_arr[new_arr == orig] = new
+    return new_arr
 
 
 class SlicesSequence(Sequence):
@@ -93,6 +94,27 @@ class SlicesSequence(Sequence):
         # Number of batches: floor(nb_samples / batch_size)
         return len(self.indexes) // self.batch_size
 
+    def __fetch_batch_iter(self, col: str, idx: int):
+        # Check for index out of range
+        len_self = len(self)
+        if idx >= len_self or idx < -len_self:
+            raise IndexError('Sequence index out of range')
+
+        # Allow negative index like python list
+        if idx < 0:
+            idx += len_self
+
+        # Get the current batch indexes
+        indexes = self.indexes[idx*self.batch_size:(idx+1)*self.batch_size]
+
+        # Load all slices for the wanted element
+        # Here we return an iterator containing `batch_size` np.ndarray[H,W,1] elements
+        return (
+            # Load the wanted slice from index=[i_scan, i_slice]
+            self.dataset_nib[col][index[0]].dataobj[...,index[1]][...,None].astype(np.float32)
+            for index in indexes
+        )
+
     def __getitem(self, idx: int, fetch_all = False) -> (np.ndarray, np.ndarray):
         # Do not use '3DT1' since its slices shapes are weird
         dtypes = {
@@ -102,8 +124,6 @@ class SlicesSequence(Sequence):
         }
         cols_without_target = ['T1', 'FLAIR']
 
-        # TODO: Slices window
-
         preprocess_slices = {
             'T1': lambda x:x,
             'FLAIR': lambda x:x,
@@ -111,83 +131,65 @@ class SlicesSequence(Sequence):
             'wmh': lambda x: ndarray_replace(x, 2, 0)
         }
 
-        if fetch_all:
-            # Load all slices for each scan
-            batch_dic = {
-                k: [
-                    # Apply preprocessing
-                    preprocess_slices[k](
-                        # Move slices axis to start: (H,W,S) -> (S,H,W)
-                        np.moveaxis(
-                            # Load the scan data
-                            np.asarray(scan.dataobj),
-                            -1,
-                            0
-                        )
-                    # Set wanted dtype after preprocessing
-                    ).astype(dtype)
-                    for scan in self.dataset_nib[k]
-                ]
-                for k,dtype in dtypes.items()
-            }
+        scan_slices_dic = {}
+        for col, dtype in dtypes.items():
+            if fetch_all:
+                # Fetch all slices for each scan
+                scan_slices = (np.asarray(scan.dataobj) for scan in self.dataset_nib[col])
+            else:
+                scan_slices = self.__fetch_batch_iter(col, idx)
 
-            # Flatten the arrays
-            batch_dic = {
-                k: [
-                    sl
-                    for slices in batch_dic[k]
-                    for sl in slices
-                ]
-                for k in dtypes.keys()
-            }
-        else:
-            # Check for index out of range
-            len_self = len(self)
-            if idx >= len_self or idx < -len_self:
-                raise IndexError('Sequence index out of range')
+            # scan_slices: Iterator[np.ndarray[H,W,S]]
 
-            # Allow negative index like python list
-            if idx < 0:
-                idx += len_self
+            # Move slices axis
+            scan_slices = (np.moveaxis(slices, -1, 0) for slices in scan_slices)
 
-            # Get the current batch
-            indexes = self.indexes[idx*self.batch_size:(idx+1)*self.batch_size]
+            # scan_slices: Iterator[np.ndarray[S,H,W]]
 
-            # Load all slices for the wanted element
-            batch_dic = {
-                k: [
-                    # Load the wanted slice from index=[i_scan, i_slice]
-                    np.asarray(
-                        self.dataset_nib[k][index[0]].dataobj[...,index[1]],
-                        dtype=np.float32
-                    )
-                    for index in indexes
-                ]
-                for k in dtypes.keys()
-            }
+            # Preprocess the slices
+            scan_slices = map(preprocess_slices[col], scan_slices)
+            # Set the wanted dtype
+            scan_slices = (arr.astype(dtype) for arr in scan_slices)
 
-        # Reshape the slices
-        for k,v in batch_dic.items():
-            for i, img in enumerate(v):
-                # Crop or pad the slices to have the same shape
-                # The tf function requires the slice to have channels
-                # so we add an axis that we remove just after
-                batch_dic[k][i] = tf.image.resize_with_crop_or_pad(
-                    img[...,None].astype(dtypes[k]),
-                    self.target_height,
-                    self.target_width
-                )[...,0]
+            # scan_slices: Iterator[np.ndarray[S,H,W]]
 
-            batch_dic[k] = np.stack(batch_dic[k], axis=0).astype(dtypes[k])
+            # Reshape the slices
+            reshape_imgs = lambda imgs: tf.image.resize_with_crop_or_pad(
+                imgs[...,None].astype(dtype),
+                self.target_height,
+                self.target_width
+            )[...,0]
+            scan_slices = map(reshape_imgs, scan_slices)
+
+            scan_slices_dic[col] = scan_slices
+
+        # Special case for 3D slices
+        if self.slices3D_radius != 0:
+            assert fetch_all, "Only implemented for fetch_all=True"
+
+            # Combine the T1 & FLAIR scan by scan
+            scan_X = (
+                np.stack([T1, FLAIR], -1)
+                for T1, FLAIR in zip(scan_slices_dic['T1'], scan_slices_dic['FLAIR'])
+            )
+            scan_Y = scan_slices_dic['wmh']
+
+            return list(scan_X), list(scan_Y)
+
+        # For 2D, merge all slices together
+        scan_slices_dic = {
+            col: np.concatenate(list(scan_slices), axis=0)
+            for col, scan_slices in scan_slices_dic.items()
+        }
 
         # Regroup all inputs together
         inputs = np.stack([
-            batch_dic[cat]
+            scan_slices_dic[cat]
             for cat in cols_without_target
         ], axis=-1)
 
         # Add the channels axis (single channel)
-        outputs = batch_dic['wmh']
+        outputs = scan_slices_dic['wmh']
 
         return inputs, outputs
 
@@ -201,8 +203,6 @@ class SlicesSequence(Sequence):
     def load_all(self):
         old_batch_size = self.batch_size
 
-        # TODO: Slices window
-
         # Change batch size to get all slices at once
         self.batch_size = len(self.indexes)
         X, Y = self.__getitem(0, fetch_all=True)
@@ -212,18 +212,6 @@ class SlicesSequence(Sequence):
 
         return X, Y
 
-
-# Pseudo-code
-# self.X = Array[Array[(S,H,W,2)]; Patients]
-# self.indexes = Array[(i_patient, i_slice)]
-
-# self.indexes.shuffle()
-
-# i_patient, i_slice = self.indexes[i]
-
-# if i_slice < N / 2:
-#     self.X[0:N/2] = 0
-# slices_patient = self.X[i_patient][i_slice - 1 : i_slice + 1]
 
 class CachedSlicesSequence(Sequence):
     def __init__(self, slices_seq: SlicesSequence, preprocess = False):
@@ -269,9 +257,6 @@ class CachedSlices3DSequence(Sequence):
         self.indexes = slices_seq.indexes
         self.slices3D_radius = slices_seq.slices3D_radius
 
-        # TODO
-        # X = Array[Array[H,W,2; Slices]; Patients]
-        # Y = Array[Array[H,W; Slices]; Patients]
         self.X, self.Y = slices_seq.load_all()
         if preprocess:
             preprocess_slices3D(self.X)
@@ -478,3 +463,15 @@ def get_dataset(data_dir: str, val_ratio = 0.1, test_ratio = 0.1, verbose = Fals
 
 if __name__ == '__main__':
     train, val, test = get_dataset('../../data', verbose=True)
+
+    slices_seq = SlicesSequence(val, 100, 200)
+    x,y = slices_seq[-1]
+    print(x.shape, y.shape)
+
+    # slices_cache = CachedSlicesSequence(slices_seq, True)
+    # x,y = slices_cache[-1]
+    # print(x.shape, y.shape)
+
+    slices_cache = CachedSlices3DSequence(slices_seq, True)
+    x,y = slices_cache[-1]
+    print(x.shape, y.shape)
