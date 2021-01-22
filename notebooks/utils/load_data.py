@@ -35,6 +35,25 @@ class SlicesSequence(Sequence):
     '''
     Helper class for slices lazy loading.
     Each index access correspond to a batch of scan slices.
+
+    Parameters:
+    -----------
+    dataset_nib: dict
+        The dataset nib dictionary returned by `get_dataset`.
+    target_height: int
+        The height of the slices after cropping or padding.
+    target_width: int
+        The width of the slices after cropping or padding.
+    slices3D_radius: int
+        The radius of the slices window:
+        - 0 -> 2D (window = current) -> X = (S, H, W, 2)
+        - 1 -> 3D (window = current + 1 before + 1 after) -> X = (S, H, W, 2, 3)
+        - ...
+        - N -> 3D (window = current + N before + N after) -> X = (S, H, W, 2, 2*N+1)
+    batch_size: int
+        The number of data slices in a batch.
+    shuffle: bool
+        Whether to shuffle the data at init and between epochs.
     '''
 
     @staticmethod
@@ -54,14 +73,21 @@ class SlicesSequence(Sequence):
         np.random.shuffle(indexes)
         return indexes
 
-    def __init__(self, dataset_nib: dict, target_height: int, target_width: int,
-                 batch_size: int, shuffle = True):
+    def __init__(self,
+                 dataset_nib: dict,
+                 target_height: int,
+                 target_width: int,
+                 slices3D_radius = 0,
+                 batch_size = 32,
+                 shuffle = True):
         self.dataset_nib = dataset_nib
-        self.shuffle = shuffle
-        self.batch_size = batch_size
-        self.indexes = SlicesSequence.create_indexes(dataset_nib, shuffle)
         self.target_height = target_height
         self.target_width = target_width
+        self.slices3D_radius = slices3D_radius
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+
+        self.indexes = SlicesSequence.create_indexes(dataset_nib, shuffle)
 
     def __len__(self) -> int:
         # Number of batches: floor(nb_samples / batch_size)
@@ -75,6 +101,8 @@ class SlicesSequence(Sequence):
             'wmh': np.bool
         }
         cols_without_target = ['T1', 'FLAIR']
+
+        # TODO: Slices window
 
         preprocess_slices = {
             'T1': lambda x:x,
@@ -173,6 +201,8 @@ class SlicesSequence(Sequence):
     def load_all(self):
         old_batch_size = self.batch_size
 
+        # TODO: Slices window
+
         # Change batch size to get all slices at once
         self.batch_size = len(self.indexes)
         X, Y = self.__getitem(0, fetch_all=True)
@@ -182,17 +212,31 @@ class SlicesSequence(Sequence):
 
         return X, Y
 
+
+# Pseudo-code
+# self.X = Array[Array[(S,H,W,2)]; Patients]
+# self.indexes = Array[(i_patient, i_slice)]
+
+# self.indexes.shuffle()
+
+# i_patient, i_slice = self.indexes[i]
+
+# if i_slice < N / 2:
+#     self.X[0:N/2] = 0
+# slices_patient = self.X[i_patient][i_slice - 1 : i_slice + 1]
+
 class CachedSlicesSequence(Sequence):
-    def __init__(self, slices_seq: SlicesSequence, batch_size: int, shuffle = True, preprocess = False):
+    def __init__(self, slices_seq: SlicesSequence, preprocess = False):
+        self.batch_size = slices_seq.batch_size
+        self.shuffle = slices_seq.shuffle
+
         self.X, self.Y = slices_seq.load_all()
         if preprocess:
             self.X = preprocess_slices(self.X)
 
         self.indexes = np.arange(0, self.Y.shape[0])
-        self.batch_size = batch_size
-        self.shuffle = shuffle
 
-        if shuffle:
+        if self.shuffle:
             np.random.shuffle(self.indexes)
 
     def __len__(self) -> int:
@@ -218,6 +262,75 @@ class CachedSlicesSequence(Sequence):
             np.random.shuffle(self.indexes)
 
 
+class CachedSlices3DSequence(Sequence):
+    def __init__(self, slices_seq: SlicesSequence, preprocess = False):
+        self.batch_size = slices_seq.batch_size
+        self.shuffle = slices_seq.shuffle
+        self.indexes = slices_seq.indexes
+        self.slices3D_radius = slices_seq.slices3D_radius
+
+        # TODO
+        # X = Array[Array[H,W,2; Slices]; Patients]
+        # Y = Array[Array[H,W; Slices]; Patients]
+        self.X, self.Y = slices_seq.load_all()
+        if preprocess:
+            preprocess_slices3D(self.X)
+
+        self.nb_slices = self.indexes.shape[0]
+
+        if self.shuffle:
+            np.random.shuffle(self.indexes)
+
+    def __len__(self) -> int:
+        return self.nb_slices // self.batch_size
+
+    def __getitem__(self, idx: int) -> (np.ndarray, np.ndarray):
+        # Check for index out of range
+        len_self = len(self)
+        if idx >= len_self or idx < -len_self:
+            raise IndexError('Sequence index out of range')
+
+        # Allow negative index like python list
+        if idx < 0:
+            idx += len_self
+
+        # [batch_size,2] (i_scan, i_slice)
+        indexes = self.indexes[idx*self.batch_size:(idx+1)*self.batch_size]
+
+        # (S, H, W, 2, 3)
+        _, height, width, nb_channels = self.X[0].shape
+        batch_x = np.zeros((self.batch_size, height, width, nb_channels, 2 * self.slices3D_radius + 1))
+        batch_y = np.zeros((self.batch_size, height, width))
+
+        for i in range(len(indexes)):
+            # Get current data specific scan slice
+            i_scan  = indexes[i][0]
+            i_slice = indexes[i][1]
+
+            # Fill current target slice wmh data
+            batch_y[i,...] = self.Y[i_scan][i_slice]
+
+            # Fill the 3D X slices (1 current + radius before + radius after)
+            for dslice in range(-self.slices3D_radius, self.slices3D_radius + 1):
+                j_slice = i_slice + dslice
+                nb_slices = self.X[i_scan].shape[0]
+
+                # If window outside the input data, leave empty (filled with 0)
+                if j_slice < 0 or j_slice >= nb_slices:
+                    continue
+
+                # Fill the current window element with every input channel
+                i_window = dslice + self.slices3D_radius
+                for channel in range(nb_channels):
+                    batch_x[i,...,channel,i_window] = self.X[i_scan][i_slice,...,channel]
+
+        return batch_x, batch_y
+
+    def on_epoch_end(self):
+        if self.shuffle:
+            np.random.shuffle(self.indexes)
+
+
 def preprocess_slices(slices, disk_kernel = 1, channel = 1):
     """
     Preprocess the dataset by adding a tophat layer
@@ -227,7 +340,9 @@ def preprocess_slices(slices, disk_kernel = 1, channel = 1):
     slices: X
     channel: FLAIR channel
     """
+
     tophat_kernel = disk(disk_kernel)
+    # TODO: Better mem usage by using np.concat at start to do nb_channels + 1
     new_shape = (slices.shape[0], slices.shape[1], slices.shape[2], slices.shape[3] + 1)
     preprocessed = np.zeros(new_shape)
     preprocessed[:,:,:,:2] = slices
@@ -236,7 +351,45 @@ def preprocess_slices(slices, disk_kernel = 1, channel = 1):
         tophat_img = morphology.white_tophat(im[:,:,channel], selem=tophat_kernel)
 
         preprocessed[i,:,:,slices.shape[3]] = tophat_img
+
     return preprocessed
+
+def preprocess_slices3D(X: list, disk_kernel = 1, channel_FLAIR = 1):
+    """
+    Compute and append in-place a preprocessing channel to the inputs.
+    Preprocess the dataset by adding a tophat layer.
+
+    Parameters:
+    -----------
+    X: List[np.ndarray]
+        An array of slices for each scan.
+    disk_kernel: int
+        The size of the disk kernel used for the tophat computation.
+    channel_FLAIR: int
+        The index of the FLAIR channel.
+    """
+
+    # Compute the tophat kernel for the preprocess
+    tophat_kernel = disk(disk_kernel)
+
+    # Compute and add as a channel the preprocess image
+    for i, arr in enumerate(X):
+        Xscan = X[i]
+
+        # Compute all preprocess images for the current scan
+        # prepro shape = (S,H,W)
+        prepro = np.asarray([
+            # Compute the preprocess image for each slice
+            morphology.white_tophat(Xscan[i_slice,...,channel_FLAIR], selem=tophat_kernel)
+            for i_slice in range(Xscan.shape[0])
+        ], dtype=np.float32)
+
+        # Concatenate the preprocess images to the inputs in the channels axis:
+        # X[i] shape   = (S,H,W,nb_channels)
+        # prepro shape = (S,H,W,1)
+        # result shape = (S,H,W,nb_channels+1)
+        X[i] = np.concatenate([X[i], prepro], axis=-1)
+
 
 def get_dataset(data_dir: str, val_ratio = 0.1, test_ratio = 0.1, verbose = False) -> (dict, dict, dict):
     """
