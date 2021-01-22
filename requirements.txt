@@ -1,3 +1,5 @@
+keras-unet
+opencv-python
 nibabel
 numpy
 scikit-image
