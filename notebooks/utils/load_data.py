@@ -257,6 +257,8 @@ class CachedSlices3DSequence(Sequence):
         self.indexes = slices_seq.indexes
         self.slices3D_radius = slices_seq.slices3D_radius
 
+        assert (self.slices3D_radius != 0), "The 3D radius must be strictly greater than 0"
+
         self.X, self.Y = slices_seq.load_all()
         if preprocess:
             preprocess_slices3D(self.X)
@@ -359,21 +361,19 @@ def preprocess_slices3D(X: list, disk_kernel = 1, channel_FLAIR = 1):
 
     # Compute and add as a channel the preprocess image
     for i, arr in enumerate(X):
-        Xscan = X[i]
-
         # Compute all preprocess images for the current scan
         # prepro shape = (S,H,W)
         prepro = np.asarray([
             # Compute the preprocess image for each slice
-            morphology.white_tophat(Xscan[i_slice,...,channel_FLAIR], selem=tophat_kernel)
-            for i_slice in range(Xscan.shape[0])
+            morphology.white_tophat(x_slice[...,channel_FLAIR], selem=tophat_kernel)
+            for x_slice in X[i]
         ], dtype=np.float32)
 
         # Concatenate the preprocess images to the inputs in the channels axis:
         # X[i] shape   = (S,H,W,nb_channels)
         # prepro shape = (S,H,W,1)
         # result shape = (S,H,W,nb_channels+1)
-        X[i] = np.concatenate([X[i], prepro], axis=-1)
+        X[i] = np.concatenate([X[i], prepro[...,None]], axis=-1)
 
 
 def get_dataset(data_dir: str, val_ratio = 0.1, test_ratio = 0.1, verbose = False) -> (dict, dict, dict):
@@ -464,14 +464,7 @@ def get_dataset(data_dir: str, val_ratio = 0.1, test_ratio = 0.1, verbose = Fals
 if __name__ == '__main__':
     train, val, test = get_dataset('../../data', verbose=True)
 
-    slices_seq = SlicesSequence(val, 100, 200)
-    x,y = slices_seq[-1]
-    print(x.shape, y.shape)
-
-    # slices_cache = CachedSlicesSequence(slices_seq, True)
-    # x,y = slices_cache[-1]
-    # print(x.shape, y.shape)
-
-    slices_cache = CachedSlices3DSequence(slices_seq, True)
-    x,y = slices_cache[-1]
+    slices_seq = SlicesSequence(train, 100, 200, slices3D_radius=5)
+    slices_3d = CachedSlices3DSequence(slices_seq, True)
+    x,y = slices_3d[-1]
     print(x.shape, y.shape)
