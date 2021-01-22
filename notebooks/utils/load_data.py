@@ -111,7 +111,7 @@ class SlicesSequence(Sequence):
         # Here we return an iterator containing `batch_size` np.ndarray[H,W,1] elements
         return (
             # Load the wanted slice from index=[i_scan, i_slice]
-            self.dataset_nib[col][index[0]].dataobj[...,index[1]][...,None].astype(np.float32)
+            np.asarray(self.dataset_nib[col][index[0]].dataobj[...,index[1]], np.float32)[...,None]
             for index in indexes
         )
 
@@ -135,7 +135,7 @@ class SlicesSequence(Sequence):
         for col, dtype in dtypes.items():
             if fetch_all:
                 # Fetch all slices for each scan
-                scan_slices = (np.asarray(scan.dataobj) for scan in self.dataset_nib[col])
+                scan_slices = (np.asarray(scan.dataobj, dtype=np.float32) for scan in self.dataset_nib[col])
             else:
                 scan_slices = self.__fetch_batch_iter(col, idx)
 
@@ -161,20 +161,22 @@ class SlicesSequence(Sequence):
             )[...,0]
             scan_slices = map(reshape_imgs, scan_slices)
 
-            scan_slices_dic[col] = scan_slices
+            # We must end the iterator here, or else python does some weird things
+            # such as changing the dtype to np.bool
+            scan_slices_dic[col] = list(scan_slices)
 
         # Special case for 3D slices
         if self.slices3D_radius != 0:
             assert fetch_all, "Only implemented for fetch_all=True"
 
             # Combine the T1 & FLAIR scan by scan
-            scan_X = (
-                np.stack([T1, FLAIR], -1)
+            scan_X = [
+                np.stack([T1, FLAIR], -1).astype(np.float32)
                 for T1, FLAIR in zip(scan_slices_dic['T1'], scan_slices_dic['FLAIR'])
-            )
-            scan_Y = scan_slices_dic['wmh']
+            ]
+            scan_Y = list(scan_slices_dic['wmh'])
 
-            return list(scan_X), list(scan_Y)
+            return scan_X, scan_Y
 
         # For 2D, merge all slices together
         scan_slices_dic = {
@@ -286,8 +288,8 @@ class CachedSlices3DSequence(Sequence):
 
         # (S, H, W, 2, 3)
         _, height, width, nb_channels = self.X[0].shape
-        batch_x = np.zeros((self.batch_size, height, width, nb_channels, 2 * self.slices3D_radius + 1))
-        batch_y = np.zeros((self.batch_size, height, width))
+        batch_x = np.zeros((self.batch_size, height, width, nb_channels, 2 * self.slices3D_radius + 1), dtype=np.float32)
+        batch_y = np.zeros((self.batch_size, height, width), dtype=np.bool)
 
         for i in range(len(indexes)):
             # Get current data specific scan slice
@@ -309,7 +311,7 @@ class CachedSlices3DSequence(Sequence):
                 # Fill the current window element with every input channel
                 i_window = dslice + self.slices3D_radius
                 for channel in range(nb_channels):
-                    batch_x[i,...,channel,i_window] = self.X[i_scan][i_slice,...,channel]
+                    batch_x[i,...,channel,i_window] = self.X[i_scan][j_slice,...,channel]
 
         return batch_x, batch_y
 
@@ -464,7 +466,16 @@ def get_dataset(data_dir: str, val_ratio = 0.1, test_ratio = 0.1, verbose = Fals
 if __name__ == '__main__':
     train, val, test = get_dataset('../../data', verbose=True)
 
+    # 2D
+    # slices_seq = SlicesSequence(val, 100, 200)
+    # slices_2d = CachedSlicesSequence(slices_seq)
+    # x,y = slices_2d[-1]
+    # print(x.dtype, y.dtype)
+    # print(x.shape, y.shape)
+
+    # 3D
     slices_seq = SlicesSequence(train, 100, 200, slices3D_radius=5)
-    slices_3d = CachedSlices3DSequence(slices_seq, True)
+    slices_3d = CachedSlices3DSequence(slices_seq)
     x,y = slices_3d[-1]
+    print(x.dtype, y.dtype)
     print(x.shape, y.shape)
