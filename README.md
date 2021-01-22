@@ -5,10 +5,9 @@ Projet Imagerie Médicale
 
 - Click the link below to the corresponding notebook
 - Work on it
-- Edit > Clear all outputs (or use the `./clean-notebooks.sh` script when working locally)
 - File > Download .ipynb
 - Replace the file in the repository
-- `./clean-notebooks.sh notebooks/*`
+- Run `./clean-notebooks.sh`
 - git add/commit/push
 
 ## Colab notebook links
@@ -22,5 +21,5 @@ Projet Imagerie Médicale
 
 Remove the outputs from the notebooks (smaller files, avoid git conflicts)
 ```bash
-./clean-notebooks.sh notebooks/*
+./clean-notebooks.sh
 ```

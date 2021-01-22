@@ -1,9 +1,35 @@
+import cv2
 import nibabel as nib
 import numpy as np
 import tensorflow as tf
+
+from skimage import morphology
+from skimage.morphology import square, disk
 from tensorflow.keras.utils import Sequence
 
 from pathlib import Path
+
+def ndarray_replace(arr: np.ndarray, orig: int, new: int) -> np.ndarray:
+    """
+    Replace every element with a specified value by another.
+
+    Parameters:
+    -----------
+    arr:
+        The array to modify (in-place).
+    orig:
+        The value to replace.
+    new:
+        The value to insert in place of the other.
+
+    Returns:
+    --------
+    arr:
+        The array that have been modified in-place.
+    """
+    arr[arr == orig] = new
+    return arr
+
 
 class SlicesSequence(Sequence):
     '''
@@ -50,26 +76,40 @@ class SlicesSequence(Sequence):
         }
         cols_without_target = ['T1', 'FLAIR']
 
+        preprocess_slices = {
+            'T1': lambda x:x,
+            'FLAIR': lambda x:x,
+            # Set target class 2 to 0
+            'wmh': lambda x: ndarray_replace(x, 2, 0)
+        }
+
         if fetch_all:
-            # Load all slices
+            # Load all slices for each scan
             batch_dic = {
-                k: np.asarray([
-                    np.moveaxis(np.asarray(
-                        self.dataset_nib[k][i_scan].dataobj,
-                        dtype=dtype
-                    ), -1, 0)
-                    for i_scan in range(self.dataset_nib[k].shape[0])
-                ], dtype=np.ndarray)
+                k: [
+                    # Apply preprocessing
+                    preprocess_slices[k](
+                        # Move slices axis to start: (H,W,S) -> (S,H,W)
+                        np.moveaxis(
+                            # Load the scan data
+                            np.asarray(scan.dataobj),
+                            -1,
+                            0
+                        )
+                    # Set wanted dtype after preprocessing
+                    ).astype(dtype)
+                    for scan in self.dataset_nib[k]
+                ]
                 for k,dtype in dtypes.items()
             }
 
             # Flatten the arrays
             batch_dic = {
-                k: np.asarray([
+                k: [
                     sl
                     for slices in batch_dic[k]
                     for sl in slices
-                ])
+                ]
                 for k in dtypes.keys()
             }
         else:
@@ -87,20 +127,23 @@ class SlicesSequence(Sequence):
 
             # Load all slices for the wanted element
             batch_dic = {
-                k: np.asarray([
+                k: [
                     # Load the wanted slice from index=[i_scan, i_slice]
                     np.asarray(
                         self.dataset_nib[k][index[0]].dataobj[...,index[1]],
                         dtype=np.float32
                     )
                     for index in indexes
-                ], dtype=np.ndarray)
+                ]
                 for k in dtypes.keys()
             }
 
         # Reshape the slices
         for k,v in batch_dic.items():
             for i, img in enumerate(v):
+                # Crop or pad the slices to have the same shape
+                # The tf function requires the slice to have channels
+                # so we add an axis that we remove just after
                 batch_dic[k][i] = tf.image.resize_with_crop_or_pad(
                     img[...,None].astype(dtypes[k]),
                     self.target_height,
@@ -140,8 +183,11 @@ class SlicesSequence(Sequence):
         return X, Y
 
 class CachedSlicesSequence(Sequence):
-    def __init__(self, slices_seq: SlicesSequence, batch_size: int, shuffle = True):
+    def __init__(self, slices_seq: SlicesSequence, batch_size: int, shuffle = True, preprocess = False):
         self.X, self.Y = slices_seq.load_all()
+        if preprocess:
+            self.X = preprocess_slices(self.X)
+
         self.indexes = np.arange(0, self.Y.shape[0])
         self.batch_size = batch_size
         self.shuffle = shuffle
@@ -172,17 +218,40 @@ class CachedSlicesSequence(Sequence):
             np.random.shuffle(self.indexes)
 
 
-def get_dataset(data_dir: str, train_ratio = 0.9, verbose = False) -> (dict, dict):
+def preprocess_slices(slices, disk_kernel = 1, channel = 1):
     """
-    Load the dataset and split it into train/validation sets.
+    Preprocess the dataset by adding a tophat layer
+
+    Parameters:
+    -----------
+    slices: X
+    channel: FLAIR channel
+    """
+    tophat_kernel = disk(disk_kernel)
+    new_shape = (slices.shape[0], slices.shape[1], slices.shape[2], slices.shape[3] + 1)
+    preprocessed = np.zeros(new_shape)
+    preprocessed[:,:,:,:2] = slices
+
+    for i, im in enumerate(slices):
+        tophat_img = morphology.white_tophat(im[:,:,channel], selem=tophat_kernel)
+
+        preprocessed[i,:,:,slices.shape[3]] = tophat_img
+    return preprocessed
+
+def get_dataset(data_dir: str, val_ratio = 0.1, test_ratio = 0.1, verbose = False) -> (dict, dict, dict):
+    """
+    Load the dataset and split it into train/val/test sets.
 
     Parameters:
     -----------
     data_dir:
         The path to the data directory.
 
-    train_ratio:
-        The proportion of train data (compared to validation).
+    val_ratio:
+        The proportion of validation data.
+
+    test_ratio:
+        The proportion of test data.
 
     verbose:
         Whether debug information should be printed.
@@ -194,6 +263,9 @@ def get_dataset(data_dir: str, train_ratio = 0.9, verbose = False) -> (dict, dic
 
     val_nib: np.array(nib_image)
         An array of validation data files loaded with `nibabel.load`.
+
+    test_nib: np.array(nib_image)
+        An array of test data files loaded with `nibabel.load`.
     """
 
     data_dir = Path(data_dir)
@@ -219,16 +291,20 @@ def get_dataset(data_dir: str, train_ratio = 0.9, verbose = False) -> (dict, dic
         for k,v in input_files.items()
     }
 
-    # Split into train/val
+    # Split into train/val/test
     shuffle = np.arange(nb_files)
     np.random.shuffle(shuffle)
 
-    nb_train = int(train_ratio * nb_files)
+    nb_val = int(np.ceil(val_ratio * nb_files))
+    nb_test = int(np.ceil(test_ratio * nb_files))
+    nb_train = nb_files - nb_val - nb_test
+
     train_index = shuffle[:nb_train]
-    val_index = shuffle[nb_train:]
+    val_index = shuffle[nb_train:nb_train+nb_val]
+    test_index = shuffle[nb_train+nb_val:]
 
     if verbose:
-        print('Train/val split:', nb_train, '/', nb_files - nb_train)
+        print('Train/val/test split:', nb_train, '/', nb_val, '/', nb_test)
 
     train_nib = {
         k: v[train_index]
@@ -240,24 +316,12 @@ def get_dataset(data_dir: str, train_ratio = 0.9, verbose = False) -> (dict, dic
         for k,v in inputs_nib.items()
     }
 
-    return (train_nib, val_nib)
+    test_nib = {
+        k: v[test_index]
+        for k,v in inputs_nib.items()
+    }
 
-from timeit import timeit
+    return (train_nib, val_nib, test_nib)
+
 if __name__ == '__main__':
-    train, val = get_dataset('../../data')
-
-    slices = SlicesSequence(train, 200, 200, 3, shuffle=True)
-    slices_cache = CachedSlicesSequence(slices, 3)
-    print(slices_cache.X.shape, slices_cache.X.dtype, slices_cache.X.nbytes / 1_000_000, 'MB')
-    print(slices_cache.Y.shape, slices_cache.Y.dtype, slices_cache.Y.nbytes / 1_000_000, 'MB')
-    x,y = slices_cache[0]
-    # print(x.shape)
-    # print(x[0].shape)
-    # print(y.shape)
-    # print(y[0].shape)
-
-    # i = 0
-    # while True:
-    #     x,y = slices[i % len(slices)]
-    #     print(i, x.shape, y.shape)
-    #     i += 1
+    train, val, test = get_dataset('../../data', verbose=True)
