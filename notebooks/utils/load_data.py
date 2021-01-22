@@ -313,6 +313,7 @@ class CachedSlices3DSequence(Sequence):
                 for channel in range(nb_channels):
                     batch_x[i,...,channel,i_window] = self.X[i_scan][j_slice,...,channel]
 
+        batch_x = batch_x.reshape((batch_x.shape[0], batch_x.shape[1], batch_x.shape[2], -1))
         return batch_x, batch_y
 
     def on_epoch_end(self):
