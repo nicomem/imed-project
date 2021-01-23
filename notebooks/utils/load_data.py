@@ -380,7 +380,7 @@ def preprocess_slices3D(X: list, disk_kernel = 1, channel_FLAIR = 1):
     tophat_kernel = disk(disk_kernel)
 
     # Compute and add as a channel the preprocess image
-    for i, arr in enumerate(X):
+    for i, _ in enumerate(X):
         # Compute all preprocess images for the current scan
         # prepro shape = (S,H,W)
         prepro = np.asarray([
