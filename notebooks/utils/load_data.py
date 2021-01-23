@@ -253,7 +253,21 @@ class CachedSlicesSequence(Sequence):
 
 
 class CachedSlices3DSequence(Sequence):
-    def __init__(self, slices_seq: SlicesSequence, preprocess = False):
+    def __remove_no_wmh_indexes(self):
+        ''' Remove slices where the wmh is all 0 '''
+
+        for i_scan in range(len(self.Y)):
+            wmh_mask = np.any(self.Y[i_scan], axis=(1,2))
+            wmh_idx = np.argwhere(wmh_mask)
+
+            self.indexes = np.asarray([
+                tup
+                for tup in self.indexes
+                if not (tup[0] == i_scan and tup[1] not in wmh_idx)
+            ], dtype=np.uint16)
+
+
+    def __init__(self, slices_seq: SlicesSequence, remove_no_wmh = False, preprocess = False):
         self.batch_size = slices_seq.batch_size
         self.shuffle = slices_seq.shuffle
         self.indexes = slices_seq.indexes
@@ -262,6 +276,9 @@ class CachedSlices3DSequence(Sequence):
         assert (self.slices3D_radius != 0), "The 3D radius must be strictly greater than 0"
 
         self.X, self.Y = slices_seq.load_all()
+        if remove_no_wmh:
+            self.__remove_no_wmh_indexes()
+
         if preprocess:
             preprocess_slices3D(self.X)
 
@@ -475,8 +492,14 @@ if __name__ == '__main__':
     # print(x.shape, y.shape)
 
     # 3D
-    slices_seq = SlicesSequence(train, 100, 200, slices3D_radius=5)
-    slices_3d = CachedSlices3DSequence(slices_seq)
+    slices_seq = SlicesSequence(train, 100, 200, slices3D_radius=5, batch_size=128)
+    slices_3d = CachedSlices3DSequence(slices_seq, remove_no_wmh=True)
+    print(len(slices_3d.indexes))
+
+    x,y = slices_3d[0]
+    print(x.dtype, y.dtype)
+    print(x.shape, y.shape)
+
     x,y = slices_3d[-1]
     print(x.dtype, y.dtype)
     print(x.shape, y.shape)
