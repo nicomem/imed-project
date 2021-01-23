@@ -257,13 +257,13 @@ class CachedSlices3DSequence(Sequence):
         ''' Remove slices where the wmh is all 0 '''
 
         for i_scan in range(len(self.Y)):
-            wmh_mask = np.any(self.Y[i_scan], axis=(1,2))
-            wmh_idx = np.argwhere(wmh_mask)
+            no_wmh_mask = np.logical_not(np.any(self.Y[i_scan], axis=(1,2)))
+            no_wmh_idx = np.argwhere(no_wmh_mask)
 
             self.indexes = np.asarray([
                 tup
                 for tup in self.indexes
-                if not (tup[0] == i_scan and tup[1] not in wmh_idx)
+                if not (tup[0] == i_scan and tup[1] in no_wmh_idx)
             ], dtype=np.uint16)
 
 
