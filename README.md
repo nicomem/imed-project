@@ -1,7 +1,9 @@
 # imed-project
-Projet Imagerie Médicale
+Repository solution for the [WMH Segmentation Challenge](https://wmh.isi.uu.nl/).
 
 ## Working on Colab
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/nicomem/imed-project/blob/master/notebooks/Notebook.ipynb)
 
 - Click the link below to the corresponding notebook
 - Work on it
@@ -9,13 +11,6 @@ Projet Imagerie Médicale
 - Replace the file in the repository
 - Run `./clean-notebooks.sh`
 - git add/commit/push
-
-## Colab notebook links
-
-- [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/nicomem/imed-project/blob/master/notebooks/2D-no-prepro.ipynb) **2D-no-prepro**
-- [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/nicomem/imed-project/blob/master/notebooks/2D-prepro.ipynb) **2D-prepro**
-- [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/nicomem/imed-project/blob/master/notebooks/3D-no-prepro.ipynb) **3D-no-prepro**
-- [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/nicomem/imed-project/blob/master/notebooks/3D-prepro.ipynb) **3D-prepro**
 
 ## Cleaning the notebooks locally
 

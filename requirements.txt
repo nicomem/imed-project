@@ -1,4 +1,5 @@
 keras-unet
+matplotlib
 nibabel
 numpy
 scikit-image
