@@ -161,6 +161,16 @@ class SlicesSequence(Sequence):
             )[...,0]
             scan_slices = map(reshape_imgs, scan_slices)
 
+            # Normalize the slice (except for wmh)
+            if col != 'wmh':
+                normalize_img = lambda img: img / np.max(img)
+                normalize_imgs = lambda imgs: np.stack([
+                    normalize_img(img)
+                    for img in imgs
+                ])
+
+                scan_slices = map(normalize_imgs, scan_slices)
+
             # We must end the iterator here, or else python does some weird things
             # such as changing the dtype to np.bool
             scan_slices_dic[col] = list(scan_slices)
@@ -216,7 +226,11 @@ class SlicesSequence(Sequence):
 
 
 class CachedSlicesSequence(Sequence):
-    def __init__(self, slices_seq: SlicesSequence, preprocess = False, remove_no_wmh = False):
+    def __init__(self,
+                 slices_seq: SlicesSequence,
+                 preprocess = False,
+                 remove_no_wmh = False,
+                 disk_kernel = 1):
         self.X, self.Y = slices_seq.load_all()
 
         self.batch_size = slices_seq.batch_size
@@ -228,13 +242,13 @@ class CachedSlicesSequence(Sequence):
             if remove_no_wmh:
                 self.__remove_no_wmh_indexes2D()
             if preprocess:
-                self.__preprocess_slices2D()
+                self.__preprocess_slices2D(disk_kernel=disk_kernel)
         else:
             self.indexes = slices_seq.indexes
             if remove_no_wmh:
                 self.__remove_no_wmh_indexes3D()
             if preprocess:
-                self.__preprocess_slices3D()
+                self.__preprocess_slices3D(disk_kernel=disk_kernel)
 
         if self.shuffle:
             np.random.shuffle(self.indexes)
@@ -287,13 +301,12 @@ class CachedSlicesSequence(Sequence):
 
         tophat_kernel = disk(disk_kernel)
 
-        # Resize X to be able to store the preprocessing images
-        new_shape = list(self.X.shape)
-        new_shape[-1] += 1
-        self.X.resize(new_shape)
+        prepro = np.asarray([
+            morphology.white_tophat(x_slice[...,channel_FLAIR], selem=tophat_kernel)
+            for x_slice in self.X
+        ], dtype=self.X.dtype)
 
-        for i in range(len(self.X)):
-            self.X[i,...,-1] = morphology.white_tophat(self.X[i,...,channel_FLAIR], selem=tophat_kernel)
+        self.X = np.concatenate([self.X, prepro[...,None]], axis=-1)
 
     def __preprocess_slices3D(self, disk_kernel = 1, channel_FLAIR = 1):
         '''
@@ -478,7 +491,7 @@ if __name__ == '__main__':
     slices3D_radius = 1
     preprocess = True
 
-    slices_seq_uncached = SlicesSequence(train, 100, 200, slices3D_radius=slices3D_radius)
+    slices_seq_uncached = SlicesSequence(val, 100, 200, slices3D_radius=slices3D_radius)
     slices_seq = CachedSlicesSequence(slices_seq_uncached, remove_no_wmh=True, preprocess=preprocess)
 
     print('Number of trainable slices:', len(slices_seq.indexes))
@@ -489,6 +502,9 @@ if __name__ == '__main__':
     x,y = slices_seq[0]
     print(x.dtype, y.dtype)
     print(x.shape, y.shape)
+    print(x[...,0].max())
+    print(x[...,1].max())
+    print(x[...,2].max())
 
     x,y = slices_seq[-1]
     print(x.dtype, y.dtype)
